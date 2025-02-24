@@ -5,7 +5,6 @@ from datetime import datetime
 import sqlite3
 import os
 from quart import Quart
-from threading import Thread
 
 # Initialize Quart web server for health checks
 app = Quart(__name__)
@@ -15,6 +14,7 @@ async def home():
     return "🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى"
 
 # --------------------------------------
+# Your existing bot code starts below
 # --------------------------------------
 
 intents = discord.Intents.default()
