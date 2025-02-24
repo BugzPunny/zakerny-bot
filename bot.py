@@ -4,6 +4,25 @@ import requests
 from datetime import datetime
 import sqlite3
 import os
+from flask import Flask
+from threading import Thread
+
+# Initialize Flask web server for health checks
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى"
+
+def run_web_server():
+    app.run(host='0.0.0.0', port=8000)
+
+# Start the web server in a background thread
+Thread(target=run_web_server, daemon=True).start()
+
+# --------------------------------------
+# Your existing bot code starts below
+# --------------------------------------
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -119,7 +138,7 @@ class ActivateButton(discord.ui.Button):
             return
 
         country = result[0]
-        activated = not result[1] if result[1] is not None else True  # Default to True if no record exists
+        activated = not result[1] if result[1] is not None else True
 
         conn = sqlite3.connect(DATABASE_URL)
         c = conn.cursor()
@@ -218,7 +237,6 @@ async def setup_prayer_channel(interaction: discord.Interaction):
             conn.commit()
             conn.close()
 
-    # Create the notification channel with restricted permissions
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
         guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
@@ -242,7 +260,6 @@ async def setup_prayer_channel(interaction: discord.Interaction):
         )
         return
 
-    # Store the channel ID in the database
     conn = sqlite3.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute(
@@ -257,13 +274,8 @@ async def setup_prayer_channel(interaction: discord.Interaction):
         ephemeral=True
     )
 
-    # Send the activation button to the new channel
     view = ActivateView()
-    await channel.send(
-        "Click the button below to activate/deactivate prayer time notifications:\n"
-        "**Note:** You must select a country using `/countries` to receive notifications.",
-        view=view
-    )
+    await channel.send("Click the button below to activate/deactivate prayer time notifications:\n**Note:** You must select a country using `/countries` to receive notifications.", view=view)
 
 @bot.tree.command(name="removerole", description="Remove your country role to stop receiving pings.")
 async def removerole(interaction: discord.Interaction):
@@ -315,10 +327,6 @@ async def info(interaction: discord.Interaction):
     embed.add_field(name="/zakerny",
                     value="Display prayer times for your selected country.",
                     inline=False)
-    embed.add_field(
-        name="/activate",
-        value="Activate/deactivate notifications.",
-        inline=False)
     embed.add_field(name="/removerole",
                     value="Remove your country role to stop receiving pings.",
                     inline=False)
@@ -377,6 +385,7 @@ async def on_ready():
 
 TOKEN = os.getenv('TOKEN')
 if not TOKEN:
-    print("Error: Token not found in environment variables!")
+    print("Error: Discord token not found in environment variables!")
     exit(1)
+
 bot.run(TOKEN)
