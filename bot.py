@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
 # --------------------------------------
+# Simple HTTP server for health checks
 # --------------------------------------
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -15,17 +16,19 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى")
+        self.wfile.write("🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى".encode("utf-8"))
 
 def run_http_server():
     server = HTTPServer(("0.0.0.0", 8000), HealthCheckHandler)
     print("Starting health check server on port 8000...")
     server.serve_forever()
 
+# Start the HTTP server in a separate thread
 http_server_thread = Thread(target=run_http_server, daemon=True)
 http_server_thread.start()
 
 # --------------------------------------
+# Your existing bot code starts below
 # --------------------------------------
 
 intents = discord.Intents.default()
@@ -87,11 +90,12 @@ class CountrySelect(discord.ui.Select):
         user_id = interaction.user.id
         guild_id = interaction.guild.id
 
-        role_name = f"{country} Subscriber"
-        role = discord.utils.get(interaction.guild.roles, name=role_name)
-        if not role:
+        # Create or get the country-specific role (e.g., Egypt_Prayer_Times)
+        times_role_name = f"{country}_Prayer_Times"
+        times_role = discord.utils.get(interaction.guild.roles, name=times_role_name)
+        if not times_role:
             try:
-                role = await interaction.guild.create_role(name=role_name, mentionable=True)
+                times_role = await interaction.guild.create_role(name=times_role_name, mentionable=True)
             except discord.Forbidden:
                 await interaction.response.send_message("I don't have permission to create roles.", ephemeral=True)
                 return
@@ -99,19 +103,22 @@ class CountrySelect(discord.ui.Select):
                 await interaction.response.send_message("Failed to create the role.", ephemeral=True)
                 return
 
+        # Remove any existing country-specific roles
         for existing_role in interaction.user.roles:
-            if "Subscriber" in existing_role.name:
+            if "_Prayer_Times" in existing_role.name:
                 await interaction.user.remove_roles(existing_role)
 
-        await interaction.user.add_roles(role)
-        await interaction.response.send_message(f"You'll now receive **{country}** prayer time notifications!", ephemeral=True)
+        # Add the new country-specific role
+        await interaction.user.add_roles(times_role)
+        await interaction.response.send_message(f"You've selected **{country}** for prayer times!", ephemeral=True)
 
+        # Update the database (reset activation status)
         conn = sqlite3.connect(DATABASE_URL)
         c = conn.cursor()
         c.execute(
             "INSERT INTO users (user_id, guild_id, country, activated) VALUES (?, ?, ?, ?) "
             "ON CONFLICT (user_id, guild_id) DO UPDATE SET country = ?, activated = ?",
-            (user_id, guild_id, country, True, country, True)
+            (user_id, guild_id, country, False, country, False)  # Reset activation on country change
         )
         conn.commit()
         conn.close()
@@ -129,6 +136,7 @@ class ActivateButton(discord.ui.Button):
         user_id = interaction.user.id
         guild_id = interaction.guild.id
 
+        # Check if the user has selected a country
         conn = sqlite3.connect(DATABASE_URL)
         c = conn.cursor()
         c.execute("SELECT country, activated FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
@@ -144,6 +152,26 @@ class ActivateButton(discord.ui.Button):
         country = result[0]
         activated = not result[1] if result[1] is not None else True
 
+        # Create or get the country-specific Prayer_Pings role
+        pings_role_name = f"{country}_Prayer_Pings"
+        pings_role = discord.utils.get(interaction.guild.roles, name=pings_role_name)
+        if not pings_role:
+            try:
+                pings_role = await interaction.guild.create_role(name=pings_role_name, mentionable=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("I don't have permission to create roles.", ephemeral=True)
+                return
+            except discord.HTTPException:
+                await interaction.response.send_message("Failed to create the role.", ephemeral=True)
+                return
+
+        # Toggle the Prayer_Pings role
+        if activated:
+            await interaction.user.add_roles(pings_role)
+        else:
+            await interaction.user.remove_roles(pings_role)
+
+        # Update activation status in the database
         conn = sqlite3.connect(DATABASE_URL)
         c = conn.cursor()
         c.execute(
@@ -298,7 +326,7 @@ async def removerole(interaction: discord.Interaction):
         return
 
     country = result[0]
-    role_name = f"{country} Subscriber"
+    role_name = f"{country}_Prayer_Times"
     role = discord.utils.get(interaction.guild.roles, name=role_name)
 
     if role:
@@ -357,7 +385,7 @@ async def notify_prayer_times():
 
         for country_entry in countries:
             country = country_entry[0]
-            role_name = f"{country} Subscriber"
+            role_name = f"{country}_Prayer_Pings"  # Mention the Pings role, not Times
             role = discord.utils.get(guild.roles, name=role_name)
 
             if not role:
