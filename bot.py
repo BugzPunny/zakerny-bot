@@ -4,24 +4,17 @@ import requests
 from datetime import datetime
 import sqlite3
 import os
-from flask import Flask
+from quart import Quart
 from threading import Thread
 
-# Initialize Flask web server for health checks
-app = Flask(__name__)
+# Initialize Quart web server for health checks
+app = Quart(__name__)
 
 @app.route('/')
-def home():
+async def home():
     return "🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى"
 
-def run_web_server():
-    app.run(host='0.0.0.0', port=8000)
-
-# Start the web server in a background thread
-Thread(target=run_web_server, daemon=True).start()
-
 # --------------------------------------
-# Your existing bot code starts below
 # --------------------------------------
 
 intents = discord.Intents.default()
@@ -380,6 +373,7 @@ async def notify_prayer_times():
 async def on_ready():
     print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
     print("------")
+    bot.loop.create_task(run_web_server())  # Start Quart web server
     notify_prayer_times.start()
     await bot.tree.sync()
 
