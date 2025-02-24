@@ -6,15 +6,16 @@ import sqlite3
 import os
 from quart import Quart
 
-# Initialize Quart web server for health checks
 app = Quart(__name__)
 
 @app.route('/')
 async def home():
     return "🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى"
 
+async def run_web_server():
+    await app.run_task(host='0.0.0.0', port=8000)
+
 # --------------------------------------
-# Your existing bot code starts below
 # --------------------------------------
 
 intents = discord.Intents.default()
