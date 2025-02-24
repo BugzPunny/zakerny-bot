@@ -4,16 +4,26 @@ import requests
 from datetime import datetime
 import sqlite3
 import os
-from quart import Quart
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 
-app = Quart(__name__)
+# --------------------------------------
+# --------------------------------------
 
-@app.route('/')
-async def home():
-    return "🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى"
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى")
 
-async def run_web_server():
-    await app.run_task(host='0.0.0.0', port=8000)
+def run_http_server():
+    server = HTTPServer(("0.0.0.0", 8000), HealthCheckHandler)
+    print("Starting health check server on port 8000...")
+    server.serve_forever()
+
+http_server_thread = Thread(target=run_http_server, daemon=True)
+http_server_thread.start()
 
 # --------------------------------------
 # --------------------------------------
@@ -374,7 +384,6 @@ async def notify_prayer_times():
 async def on_ready():
     print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
     print("------")
-    bot.loop.create_task(run_web_server())  # Start Quart web server
     notify_prayer_times.start()
     await bot.tree.sync()
 
