@@ -35,7 +35,7 @@ CLEANUP_AFTER_ISHA = True
 MAX_PINGS_TO_KEEP = 5
 
 # --------------------------------------
-# Health Check Server
+# Health Check Server (Updated Port)
 # --------------------------------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -45,8 +45,8 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write("🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى".encode("utf-8"))
 
 def run_http_server():
-    server = HTTPServer(("0.0.0.0", 8000), HealthCheckHandler)
-    print("Starting health check server on port 8000...")
+    server = HTTPServer(("0.0.0.0", 8080), HealthCheckHandler)  # Changed to port 8080
+    print("Starting health check server on port 8080...")
     server.serve_forever()
 
 # Start the HTTP server in a separate thread
