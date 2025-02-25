@@ -1,4 +1,4 @@
-import discord
+vimport discord
 from discord.ext import commands, tasks
 import requests
 from datetime import datetime
@@ -19,8 +19,8 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write("🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى".encode("utf-8"))
 
 def run_http_server():
-    server = HTTPServer(("0.0.0.0", 8000), HealthCheckHandler)
-    print("Starting health check server on port 8000...")
+    server = HTTPServer(("0.0.0.0", 8080), HealthCheckHandler)  # Changed to port 8080
+    print("Starting health check server on port 8080...")
     server.serve_forever()
 
 # Start the HTTP server in a separate thread
@@ -137,7 +137,7 @@ class CountryView(discord.ui.View):
 
 class ActivateButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="Activate", style=discord.ButtonStyle.green)
+        super().__init__(label="Activate", style=discord.ButtonStyle.green, custom_id="persistent_activate")
 
     async def callback(self, interaction: discord.Interaction):
         try:
@@ -203,179 +203,209 @@ class ActivateButton(discord.ui.Button):
 
 class ActivateView(discord.ui.View):
     def __init__(self):
-        super().__init__()
+        super().__init__(timeout=None)
         self.add_item(ActivateButton())
 
 @bot.tree.command(name="countries", description="Select your country to get prayer time notifications.")
 async def countries(interaction: discord.Interaction):
-    view = CountryView()
-    await interaction.response.send_message("Please select your country:", view=view, ephemeral=True)
+    try:
+        view = CountryView()
+        await interaction.response.send_message("Please select your country:", view=view, ephemeral=True)
+    except Exception as e:
+        print(f"Error in /countries command: {e}")
+        await interaction.response.send_message(
+            "An error occurred. Please try again later.",
+            ephemeral=True)
 
 @bot.tree.command(name="zakerny", description="Display prayer times for your selected country.")
 async def zakerny(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    guild_id = interaction.guild.id
+    try:
+        user_id = interaction.user.id
+        guild_id = interaction.guild.id
 
-    with sqlite3.connect(DATABASE_URL) as conn:
-        c = conn.cursor()
-        c.execute("SELECT country FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
-        result = c.fetchone()
+        with sqlite3.connect(DATABASE_URL) as conn:
+            c = conn.cursor()
+            c.execute("SELECT country FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+            result = c.fetchone()
 
-    if result is None:
+        if result is None:
+            await interaction.response.send_message(
+                "You haven't selected a country yet. Use `/countries` to select your country.",
+                ephemeral=True)
+            return
+
+        country = result[0]
+        city = SUPPORTED_COUNTRIES[country]
+
+        prayer_times = get_prayer_times(city, country)
+
+        if prayer_times:
+            # Filter out excluded prayers
+            filtered_prayers = {prayer: time for prayer, time in prayer_times.items() 
+                              if prayer not in EXCLUDED_PRAYERS}
+            
+            embed = discord.Embed(
+                title=f"Prayer Times for {city}, {country} 🕌",
+                description="Here are the prayer times for today:",
+                color=discord.Color.blue())
+            
+            # Add filtered fields
+            for prayer, time in filtered_prayers.items():
+                embed.add_field(name=prayer, value=convert_to_12_hour(time), inline=True)
+            
+            embed.set_footer(text="فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(
+                "Failed to fetch prayer times. Please try again later.",
+                ephemeral=True)
+    except Exception as e:
+        print(f"Error in /zakerny command: {e}")
         await interaction.response.send_message(
-            "You haven't selected a country yet. Use `/countries` to select your country.",
-            ephemeral=True)
-        return
-
-    country = result[0]
-    city = SUPPORTED_COUNTRIES[country]
-
-    prayer_times = get_prayer_times(city, country)
-
-    if prayer_times:
-        # Filter out excluded prayers
-        filtered_prayers = {prayer: time for prayer, time in prayer_times.items() 
-                          if prayer not in EXCLUDED_PRAYERS}
-        
-        embed = discord.Embed(
-            title=f"Prayer Times for {city}, {country} 🕌",
-            description="Here are the prayer times for today:",
-            color=discord.Color.blue())
-        
-        # Add filtered fields
-        for prayer, time in filtered_prayers.items():
-            embed.add_field(name=prayer, value=convert_to_12_hour(time), inline=True)
-        
-        embed.set_footer(text="فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    else:
-        await interaction.response.send_message(
-            "Failed to fetch prayer times. Please try again later.",
+            "An error occurred. Please try again later.",
             ephemeral=True)
 
 @bot.tree.command(name="setup-prayer-channel", description="Create a prayer times notification channel.")
 async def setup_prayer_channel(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message(
-            "You must be an administrator to use this command.",
-            ephemeral=True)
-        return
-
-    guild = interaction.guild
-    guild_id = guild.id
-
-    with sqlite3.connect(DATABASE_URL) as conn:
-        c = conn.cursor()
-        c.execute("SELECT channel_id, message_id FROM servers WHERE guild_id = ?", (guild_id,))
-        result = c.fetchone()
-
-    if result:
-        channel_id, message_id = result
-        channel = guild.get_channel(channel_id)
-        if channel:
+    try:
+        if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
-                f"Notification channel already exists: {channel.mention}",
+                "You must be an administrator to use this command.",
+                ephemeral=True)
+            return
+
+        guild = interaction.guild
+        guild_id = guild.id
+
+        with sqlite3.connect(DATABASE_URL) as conn:
+            c = conn.cursor()
+            c.execute("SELECT channel_id, message_id FROM servers WHERE guild_id = ?", (guild_id,))
+            result = c.fetchone()
+
+        if result:
+            channel_id, message_id = result
+            channel = guild.get_channel(channel_id)
+            if channel:
+                await interaction.response.send_message(
+                    f"Notification channel already exists: {channel.mention}",
+                    ephemeral=True
+                )
+                return
+            else:
+                with sqlite3.connect(DATABASE_URL) as conn:
+                    c = conn.cursor()
+                    c.execute("DELETE FROM servers WHERE guild_id = ?", (guild_id,))
+                    conn.commit()
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
+        try:
+            channel = await guild.create_text_channel(
+                name="prayer-times",
+                overwrites=overwrites,
+                reason="Prayer time notifications"
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "I don't have permission to create channels. Please check my permissions.",
                 ephemeral=True
             )
             return
-        else:
-            with sqlite3.connect(DATABASE_URL) as conn:
-                c = conn.cursor()
-                c.execute("DELETE FROM servers WHERE guild_id = ?", (guild_id,))
-                conn.commit()
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "Failed to create the notification channel. Please try again later.",
+                ephemeral=True
+            )
+            return
 
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
-        guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-    }
-    try:
-        channel = await guild.create_text_channel(
-            name="prayer-times",
-            overwrites=overwrites,
-            reason="Prayer time notifications"
-        )
-    except discord.Forbidden:
+        view = ActivateView()
+        message = await channel.send("Click the button below to activate/deactivate prayer time notifications:\n**Note:** You must select a country using `/countries` to receive notifications.", view=view)
+
+        with sqlite3.connect(DATABASE_URL) as conn:
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO servers (guild_id, channel_id, message_id) VALUES (?, ?, ?)",
+                (guild_id, channel.id, message.id)
+            )
+            conn.commit()
+
         await interaction.response.send_message(
-            "I don't have permission to create channels. Please check my permissions.",
+            f"Notification channel created: {channel.mention}",
             ephemeral=True
         )
-        return
-    except discord.HTTPException:
+    except Exception as e:
+        print(f"Error in /setup-prayer-channel command: {e}")
         await interaction.response.send_message(
-            "Failed to create the notification channel. Please try again later.",
-            ephemeral=True
-        )
-        return
-
-    view = ActivateView()
-    message = await channel.send("Click the button below to activate/deactivate prayer time notifications:\n**Note:** You must select a country using `/countries` to receive notifications.", view=view)
-
-    with sqlite3.connect(DATABASE_URL) as conn:
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO servers (guild_id, channel_id, message_id) VALUES (?, ?, ?)",
-            (guild_id, channel.id, message.id)
-        )
-        conn.commit()
-
-    await interaction.response.send_message(
-        f"Notification channel created: {channel.mention}",
-        ephemeral=True
-    )
+            "An error occurred. Please try again later.",
+            ephemeral=True)
 
 @bot.tree.command(name="removerole", description="Remove your country role to stop receiving pings.")
 async def removerole(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    guild_id = interaction.guild.id
+    try:
+        user_id = interaction.user.id
+        guild_id = interaction.guild.id
 
-    with sqlite3.connect(DATABASE_URL) as conn:
-        c = conn.cursor()
-        c.execute("SELECT country FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
-        result = c.fetchone()
+        with sqlite3.connect(DATABASE_URL) as conn:
+            c = conn.cursor()
+            c.execute("SELECT country FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+            result = c.fetchone()
 
-    if result is None:
+        if result is None:
+            await interaction.response.send_message(
+                "You don't have a country role to remove.", ephemeral=True)
+            return
+
+        country = result[0]
+        role_name = f"{country}_Prayer_Times"
+        role = discord.utils.get(interaction.guild.roles, name=role_name)
+
+        if role:
+            try:
+                await interaction.user.remove_roles(role)
+                await interaction.response.send_message(
+                    f"Your **{role_name}** role has been removed.", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "I don't have permission to remove roles. Please check my permissions.",
+                    ephemeral=True)
+            except discord.HTTPException:
+                await interaction.response.send_message(
+                    "Failed to remove your role. Please try again later.",
+                    ephemeral=True)
+        else:
+            await interaction.response.send_message(
+                "Your role doesn't exist anymore.", ephemeral=True)
+    except Exception as e:
+        print(f"Error in /removerole command: {e}")
         await interaction.response.send_message(
-            "You don't have a country role to remove.", ephemeral=True)
-        return
-
-    country = result[0]
-    role_name = f"{country}_Prayer_Times"
-    role = discord.utils.get(interaction.guild.roles, name=role_name)
-
-    if role:
-        try:
-            await interaction.user.remove_roles(role)
-            await interaction.response.send_message(
-                f"Your **{role_name}** role has been removed.", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "I don't have permission to remove roles. Please check my permissions.",
-                ephemeral=True)
-        except discord.HTTPException:
-            await interaction.response.send_message(
-                "Failed to remove your role. Please try again later.",
-                ephemeral=True)
-    else:
-        await interaction.response.send_message(
-            "Your role doesn't exist anymore.", ephemeral=True)
+            "An error occurred. Please try again later.",
+            ephemeral=True)
 
 @bot.tree.command(name="info", description="Display information about all available commands.")
 async def info(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="Zakerny Bot Commands 🕌",
-        description="Here are all the commands and how to use them:",
-        color=discord.Color.blue())
-    embed.add_field(
-        name="/countries",
-        value="Select your country to receive prayer time notifications.",
-        inline=False)
-    embed.add_field(name="/zakerny",
-                    value="Display prayer times for your selected country.",
-                    inline=False)
-    embed.add_field(name="/removerole",
-                    value="Remove your country role to stop receiving pings.",
-                    inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    try:
+        embed = discord.Embed(
+            title="Zakerny Bot Commands 🕌",
+            description="Here are all the commands and how to use them:",
+            color=discord.Color.blue())
+        embed.add_field(
+            name="/countries",
+            value="Select your country to receive prayer time notifications.",
+            inline=False)
+        embed.add_field(name="/zakerny",
+                        value="Display prayer times for your selected country.",
+                        inline=False)
+        embed.add_field(name="/removerole",
+                        value="Remove your country role to stop receiving pings.",
+                        inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    except Exception as e:
+        print(f"Error in /info command: {e}")
+        await interaction.response.send_message(
+            "An error occurred. Please try again later.",
+            ephemeral=True)
 
 # New channel cleanup function
 async def self_clean_channel(channel, keep_message_id):
@@ -427,8 +457,6 @@ async def notify_prayer_times():
                 if now.hour == isha_time.hour and now.minute == isha_time.minute:
                     await self_clean_channel(channel, message_id)
 
-            # Rest of your existing notification code...
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
@@ -462,7 +490,9 @@ async def on_ready():
                      (new_msg.id, guild_id))
             conn.commit()
 
+    # Sync commands with Discord
     await bot.tree.sync()
+    print("Commands synced!")
 
 TOKEN = os.getenv('TOKEN')
 if not TOKEN:
