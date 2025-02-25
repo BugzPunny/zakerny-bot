@@ -1,4 +1,4 @@
-vimport discord
+import discord
 from discord.ext import commands, tasks
 import requests
 from datetime import datetime
