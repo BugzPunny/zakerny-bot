@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import sqlite3
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -311,8 +311,13 @@ async def setup_prayer_channel(interaction: discord.Interaction):
         ephemeral=True
     )
 
+    # Send the activation message with the button
     view = ActivateView()
-    await channel.send("Click the button below to activate/deactivate prayer time notifications:\n**Note:** You must select a country using `/countries` to receive notifications.", view=view)
+    await channel.send(
+        "Click the button below to activate/deactivate prayer time notifications:\n"
+        "**Note:** You must select a country using `/countries` to receive notifications.",
+        view=view
+    )
 
 @bot.tree.command(name="removerole", description="Remove your country role to stop receiving pings.")
 async def removerole(interaction: discord.Interaction):
@@ -466,6 +471,36 @@ async def on_ready():
     print("------")
     notify_prayer_times.start()
     cleanup_prayer_pings.start()
+
+    # Re-attach the activation button to the prayer-times channel if it exists
+    conn = sqlite3.connect(DATABASE_URL)
+    c = conn.cursor()
+    c.execute("SELECT guild_id, channel_id FROM servers")
+    servers = c.fetchall()
+    conn.close()
+
+    for guild_id, channel_id in servers:
+        guild = bot.get_guild(guild_id)
+        if not guild:
+            continue
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            continue
+
+        # Check if the activation message already exists
+        async for message in channel.history(limit=10):
+            if message.author == bot.user and "Click the button below" in message.content:
+                break
+        else:
+            # Send the activation message with the button
+            view = ActivateView()
+            await channel.send(
+                "Click the button below to activate/deactivate prayer time notifications:\n"
+                "**Note:** You must select a country using `/countries` to receive notifications.",
+                view=view
+            )
+
     await bot.tree.sync()
 
 TOKEN = os.getenv('TOKEN')
