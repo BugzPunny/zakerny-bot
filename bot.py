@@ -35,7 +35,7 @@ CLEANUP_AFTER_ISHA = True
 MAX_PINGS_TO_KEEP = 5
 
 # --------------------------------------
-# Health Check Server (Updated Port)
+# Health Check Server
 # --------------------------------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -111,6 +111,19 @@ class CountrySelect(discord.ui.Select):
             except discord.HTTPException:
                 await interaction.response.send_message("Failed to create the role.", ephemeral=True)
                 return
+
+        # Ensure the bot's role is higher than the role it's trying to assign
+        bot_member = interaction.guild.get_member(bot.user.id)
+        if not bot_member:
+            await interaction.response.send_message("Bot member not found.", ephemeral=True)
+            return
+
+        bot_top_role = bot_member.top_role
+        if times_role >= bot_top_role:
+            await interaction.response.send_message(
+                f"I cannot assign the **{times_role.name}** role because it is higher than or equal to my highest role.",
+                ephemeral=True)
+            return
 
         # Remove any existing country-specific roles
         for existing_role in interaction.user.roles:
@@ -189,6 +202,19 @@ class ActivateButton(discord.ui.Button):
                         "Failed to create the role. Please try again later.",
                         ephemeral=True)
                     return
+
+            # Ensure the bot's role is higher than the role it's trying to assign
+            bot_member = interaction.guild.get_member(bot.user.id)
+            if not bot_member:
+                await interaction.response.send_message("Bot member not found.", ephemeral=True)
+                return
+
+            bot_top_role = bot_member.top_role
+            if pings_role >= bot_top_role:
+                await interaction.response.send_message(
+                    f"I cannot assign the **{pings_role.name}** role because it is higher than or equal to my highest role.",
+                    ephemeral=True)
+                return
 
             # Toggle the Prayer_Pings role
             if activated:
@@ -423,7 +449,6 @@ async def info(interaction: discord.Interaction):
         await interaction.response.send_message(
             "An error occurred. Please try again later.",
             ephemeral=True)
-
 # --------------------------------------
 # Self-Cleaning System
 # --------------------------------------
