@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
 # --------------------------------------
+# Simple HTTP server for health checks
+# --------------------------------------
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -21,10 +23,12 @@ def run_http_server():
     print("Starting health check server on port 8000...")
     server.serve_forever()
 
-
+# Start the HTTP server in a separate thread
 http_server_thread = Thread(target=run_http_server, daemon=True)
 http_server_thread.start()
 
+# --------------------------------------
+# Your existing bot code starts below
 # --------------------------------------
 
 intents = discord.Intents.default()
