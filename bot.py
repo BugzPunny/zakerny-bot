@@ -53,7 +53,7 @@ SUPPORTED_COUNTRIES = {
 # Prayers to exclude from notifications and /zakerny
 EXCLUDED_PRAYERS = ["Midnight", "Firstthird", "Lastthird"]
 
-DATABASE_URL = "zakerny.db"
+DATABASE_URL = "/app/zakerny.db"
 
 def init_db():
     conn = sqlite3.connect(DATABASE_URL)
