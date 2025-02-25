@@ -16,7 +16,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write("🕌 Bot is running!".encode("utf-8"))
+        self.wfile.write("🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى".encode("utf-8"))
 
 def run_http_server():
     server = HTTPServer(("0.0.0.0", 8000), HealthCheckHandler)
@@ -53,6 +53,7 @@ SUPPORTED_COUNTRIES = {
 # Prayers to exclude from notifications and /zakerny
 EXCLUDED_PRAYERS = ["Midnight", "Firstthird", "Lastthird"]
 
+# Use an absolute path for the database
 DATABASE_URL = "/app/zakerny.db"
 
 def init_db():
