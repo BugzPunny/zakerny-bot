@@ -55,6 +55,10 @@ EXCLUDED_PRAYERS = ["Midnight", "Firstthird", "Lastthird"]
 
 DATABASE_URL = "zakerny.db"
 
+# Add these new variables
+CLEANUP_AFTER_ISHA = True  # Set to False to disable auto-cleanup
+MAX_PINGS_TO_KEEP = 5      # Keep last X pings + the activate button
+
 def init_db():
     with sqlite3.connect(DATABASE_URL) as conn:
         c = conn.cursor()
@@ -373,60 +377,28 @@ async def info(interaction: discord.Interaction):
                     inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# New channel cleanup function
+async def self_clean_channel(channel, keep_message_id):
+    try:
+        # Get all messages except those to keep
+        messages_to_delete = []
+        async for message in channel.history(limit=200):
+            if message.id == keep_message_id:
+                continue
+            if len(messages_to_delete) < MAX_PINGS_TO_KEEP and "It's time for" in message.content:
+                continue  # Keep recent pings
+            messages_to_delete.append(message)
+
+        # Bulk delete in batches
+        for i in range(0, len(messages_to_delete), 100):
+            batch = messages_to_delete[i:i+100]
+            await channel.delete_messages(batch)
+            
+    except Exception as e:
+        print(f"Cleanup error in {channel.id}: {e}")
+
 @tasks.loop(minutes=1)
 async def notify_prayer_times():
-    with sqlite3.connect(DATABASE_URL) as conn:
-        c = conn.cursor()
-        c.execute("SELECT guild_id, channel_id FROM servers")
-        servers = c.fetchall()
-
-        for guild_id, channel_id in servers:
-            guild = bot.get_guild(guild_id)
-            if not guild:
-                continue
-
-            channel = guild.get_channel(channel_id)
-            if not channel:
-                continue
-
-            c.execute("SELECT country FROM users WHERE guild_id = ? AND activated = 1 GROUP BY country", (guild_id,))
-            countries = c.fetchall()
-
-            for country_entry in countries:
-                country = country_entry[0]
-                role_name = f"{country}_Prayer_Pings"
-                role = discord.utils.get(guild.roles, name=role_name)
-
-                if not role:
-                    try:
-                        role = await guild.create_role(name=role_name, mentionable=True)
-                    except discord.Forbidden:
-                        print(f"Missing permissions to create role in {guild.name}")
-                        continue
-
-                city = SUPPORTED_COUNTRIES.get(country)
-                prayer_times = get_prayer_times(city, country)
-                
-                if prayer_times:
-                    current_time = datetime.now().strftime("%H:%M")
-                    # Filter out excluded prayers
-                    filtered_prayers = {prayer: time for prayer, time in prayer_times.items() 
-                                       if prayer not in EXCLUDED_PRAYERS}
-                    
-                    for prayer, time in filtered_prayers.items():
-                        if current_time == time:
-                            await channel.send(
-                                f"{role.mention} It's time for **{prayer}**! ⏰",
-                                allowed_mentions=discord.AllowedMentions(roles=True)
-                            )
-
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
-    print("------")
-    notify_prayer_times.start()
-
-    # Re-attach the view to the message in the notification channel
     with sqlite3.connect(DATABASE_URL) as conn:
         c = conn.cursor()
         c.execute("SELECT guild_id, channel_id, message_id FROM servers")
@@ -441,16 +413,54 @@ async def on_ready():
             if not channel:
                 continue
 
+            # Fetch prayer times for cleanup scheduling
+            c.execute("SELECT country FROM users WHERE guild_id = ? LIMIT 1", (guild_id,))
+            country = c.fetchone()[0]
+            city = SUPPORTED_COUNTRIES[country]
+            prayer_times = get_prayer_times(city, country)
+
+            if prayer_times:
+                isha_time = datetime.strptime(prayer_times["Isha"], "%H:%M")
+                now = datetime.now()
+
+                # Schedule cleanup 1 minute after Isha
+                if now.hour == isha_time.hour and now.minute == isha_time.minute:
+                    await self_clean_channel(channel, message_id)
+
+            # Rest of your existing notification code...
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
+    print("------")
+    notify_prayer_times.start()
+
+    # Reattach button and fix message position
+    with sqlite3.connect(DATABASE_URL) as conn:
+        c = conn.cursor()
+        c.execute("SELECT guild_id, channel_id, message_id FROM servers")
+        servers = c.fetchall()
+
+        for guild_id, channel_id, message_id in servers:
+            guild = bot.get_guild(guild_id)
+            channel = guild.get_channel(channel_id)
+            
             try:
-                message = await channel.fetch_message(message_id)
-                view = ActivateView()
-                await message.edit(content=message.content, view=view)
-            except discord.NotFound:
-                print(f"Message with ID {message_id} not found in channel {channel_id} in guild {guild_id}")
-            except discord.Forbidden:
-                print(f"Missing permissions to fetch or edit message in channel {channel_id} in guild {guild_id}")
-            except discord.HTTPException as e:
-                print(f"Failed to re-attach view to message in channel {channel_id} in guild {guild_id}: {e}")
+                # Delete old button message if exists
+                if message_id:
+                    old_msg = await channel.fetch_message(message_id)
+                    await old_msg.delete()
+            except:
+                pass
+
+            # Send new button at bottom
+            view = ActivateView()
+            new_msg = await channel.send("🕌 Activate notifications:", view=view)
+            
+            # Update database with new message ID
+            c.execute("UPDATE servers SET message_id = ? WHERE guild_id = ?", 
+                     (new_msg.id, guild_id))
+            conn.commit()
 
     await bot.tree.sync()
 
