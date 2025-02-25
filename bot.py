@@ -50,6 +50,9 @@ SUPPORTED_COUNTRIES = {
     "Canada": "Toronto"
 }
 
+# Prayers to exclude from notifications and /zakerny
+EXCLUDED_PRAYERS = ["Midnight", "Firstthird", "Lastthird"]
+
 DATABASE_URL = "zakerny.db"
 
 def init_db():
@@ -219,16 +222,19 @@ async def zakerny(interaction: discord.Interaction):
     prayer_times = get_prayer_times(city, country)
 
     if prayer_times:
+        # Filter out excluded prayers
+        filtered_prayers = {prayer: time for prayer, time in prayer_times.items() 
+                          if prayer not in EXCLUDED_PRAYERS}
+        
         embed = discord.Embed(
             title=f"Prayer Times for {city}, {country} 🕌",
             description="Here are the prayer times for today:",
             color=discord.Color.blue())
-        embed.add_field(name="Fajr", value=convert_to_12_hour(prayer_times["Fajr"]), inline=True)
-        embed.add_field(name="Sunrise", value=convert_to_12_hour(prayer_times["Sunrise"]), inline=True)
-        embed.add_field(name="Dhuhr", value=convert_to_12_hour(prayer_times["Dhuhr"]), inline=True)
-        embed.add_field(name="Asr", value=convert_to_12_hour(prayer_times["Asr"]), inline=True)
-        embed.add_field(name="Maghrib", value=convert_to_12_hour(prayer_times["Maghrib"]), inline=True)
-        embed.add_field(name="Isha", value=convert_to_12_hour(prayer_times["Isha"]), inline=True)
+        
+        # Add filtered fields
+        for prayer, time in filtered_prayers.items():
+            embed.add_field(name=prayer, value=convert_to_12_hour(time), inline=True)
+        
         embed.set_footer(text="فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى")
         await interaction.response.send_message(embed=embed, ephemeral=True)
     else:
@@ -385,7 +391,7 @@ async def notify_prayer_times():
 
         for country_entry in countries:
             country = country_entry[0]
-            role_name = f"{country}_Prayer_Pings"  # Mention the Pings role, not Times
+            role_name = f"{country}_Prayer_Pings"
             role = discord.utils.get(guild.roles, name=role_name)
 
             if not role:
@@ -400,7 +406,11 @@ async def notify_prayer_times():
             
             if prayer_times:
                 current_time = datetime.now().strftime("%H:%M")
-                for prayer, time in prayer_times.items():
+                # Filter out excluded prayers
+                filtered_prayers = {prayer: time for prayer, time in prayer_times.items() 
+                                   if prayer not in EXCLUDED_PRAYERS}
+                
+                for prayer, time in filtered_prayers.items():
                     if current_time == time:
                         await channel.send(
                             f"{role.mention} It's time for **{prayer}**! ⏰",
