@@ -8,29 +8,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
 # --------------------------------------
-# Simple HTTP server for health checks
+# Configuration
 # --------------------------------------
-
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write("🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى".encode("utf-8"))
-
-def run_http_server():
-    server = HTTPServer(("0.0.0.0", 8080), HealthCheckHandler)  # Changed to port 8080
-    print("Starting health check server on port 8080...")
-    server.serve_forever()
-
-# Start the HTTP server in a separate thread
-http_server_thread = Thread(target=run_http_server, daemon=True)
-http_server_thread.start()
-
-# --------------------------------------
-# Your existing bot code starts below
-# --------------------------------------
-
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -50,29 +29,51 @@ SUPPORTED_COUNTRIES = {
     "Canada": "Toronto"
 }
 
-# Prayers to exclude from notifications and /zakerny
 EXCLUDED_PRAYERS = ["Midnight", "Firstthird", "Lastthird"]
-
 DATABASE_URL = "zakerny.db"
+CLEANUP_AFTER_ISHA = True
+MAX_PINGS_TO_KEEP = 5
 
-# Add these new variables
-CLEANUP_AFTER_ISHA = True  # Set to False to disable auto-cleanup
-MAX_PINGS_TO_KEEP = 5      # Keep last X pings + the activate button
+# --------------------------------------
+# Health Check Server (Updated Port)
+# --------------------------------------
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write("🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى".encode("utf-8"))
 
+def run_http_server():
+    server = HTTPServer(("0.0.0.0", 8080), HealthCheckHandler)  # Changed to port 8080
+    print("Starting health check server on port 8080...")
+    server.serve_forever()
+
+# Start the HTTP server in a separate thread
+http_server_thread = Thread(target=run_http_server, daemon=True)
+http_server_thread.start()
+
+# --------------------------------------
+# Database Setup
+# --------------------------------------
 def init_db():
     with sqlite3.connect(DATABASE_URL) as conn:
-        c = conn.cursor()
-        # Create servers table with message_id column
-        c.execute('''CREATE TABLE IF NOT EXISTS servers 
-                     (guild_id INTEGER PRIMARY KEY, channel_id INTEGER, message_id INTEGER)''')
-        # Create users table
-        c.execute('''CREATE TABLE IF NOT EXISTS users 
-                     (user_id INTEGER, guild_id INTEGER, country TEXT, activated BOOLEAN,
-                      PRIMARY KEY (user_id, guild_id))''')
-        conn.commit()
+        conn.execute('''CREATE TABLE IF NOT EXISTS servers 
+                      (guild_id INTEGER PRIMARY KEY, 
+                       channel_id INTEGER, 
+                       message_id INTEGER)''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS users 
+                      (user_id INTEGER, 
+                       guild_id INTEGER, 
+                       country TEXT, 
+                       activated BOOLEAN,
+                       PRIMARY KEY (user_id, guild_id))''')
 
 init_db()
 
+# --------------------------------------
+# Core Functionality
+# --------------------------------------
 def get_prayer_times(city, country):
     url = f"http://api.aladhan.com/v1/timingsByCity?city={city}&country={country}&method=5"
     response = requests.get(url)
@@ -114,10 +115,23 @@ class CountrySelect(discord.ui.Select):
         # Remove any existing country-specific roles
         for existing_role in interaction.user.roles:
             if "_Prayer_Times" in existing_role.name:
-                await interaction.user.remove_roles(existing_role)
+                try:
+                    await interaction.user.remove_roles(existing_role)
+                except discord.Forbidden:
+                    await interaction.response.send_message(
+                        "I don't have permission to remove roles. Please check my permissions.",
+                        ephemeral=True)
+                    return
 
         # Add the new country-specific role
-        await interaction.user.add_roles(times_role)
+        try:
+            await interaction.user.add_roles(times_role)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "I don't have permission to assign roles. Please check my permissions.",
+                ephemeral=True)
+            return
+
         await interaction.response.send_message(f"You've selected **{country}** for prayer times!", ephemeral=True)
 
         # Update the database (reset activation status)
@@ -206,6 +220,9 @@ class ActivateView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(ActivateButton())
 
+# --------------------------------------
+# Commands
+# --------------------------------------
 @bot.tree.command(name="countries", description="Select your country to get prayer time notifications.")
 async def countries(interaction: discord.Interaction):
     try:
@@ -407,7 +424,9 @@ async def info(interaction: discord.Interaction):
             "An error occurred. Please try again later.",
             ephemeral=True)
 
-# New channel cleanup function
+# --------------------------------------
+# Self-Cleaning System
+# --------------------------------------
 async def self_clean_channel(channel, keep_message_id):
     try:
         # Get all messages except those to keep
@@ -444,8 +463,13 @@ async def notify_prayer_times():
                 continue
 
             # Fetch prayer times for cleanup scheduling
-            c.execute("SELECT country FROM users WHERE guild_id = ? LIMIT 1", (guild_id,))
-            country = c.fetchone()[0]
+            c.execute("SELECT country FROM users WHERE guild_id = ? AND activated = 1 LIMIT 1", (guild_id,))
+            result = c.fetchone()
+
+            if result is None:
+                continue  # Skip if no active users are found
+
+            country = result[0]
             city = SUPPORTED_COUNTRIES[country]
             prayer_times = get_prayer_times(city, country)
 
@@ -456,7 +480,6 @@ async def notify_prayer_times():
                 # Schedule cleanup 1 minute after Isha
                 if now.hour == isha_time.hour and now.minute == isha_time.minute:
                     await self_clean_channel(channel, message_id)
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
