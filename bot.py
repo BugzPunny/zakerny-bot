@@ -58,8 +58,10 @@ DATABASE_URL = "zakerny.db"
 def init_db():
     with sqlite3.connect(DATABASE_URL) as conn:
         c = conn.cursor()
+        # Create servers table with message_id column
         c.execute('''CREATE TABLE IF NOT EXISTS servers 
                      (guild_id INTEGER PRIMARY KEY, channel_id INTEGER, message_id INTEGER)''')
+        # Create users table
         c.execute('''CREATE TABLE IF NOT EXISTS users 
                      (user_id INTEGER, guild_id INTEGER, country TEXT, activated BOOLEAN,
                       PRIMARY KEY (user_id, guild_id))''')
