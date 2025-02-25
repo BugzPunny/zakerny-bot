@@ -8,8 +8,29 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
 # --------------------------------------
-# Configuration
+# Simple HTTP server for health checks
 # --------------------------------------
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write("🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى".encode("utf-8"))
+
+def run_http_server():
+    server = HTTPServer(("0.0.0.0", 8000), HealthCheckHandler)
+    print("Starting health check server on port 8000...")
+    server.serve_forever()
+
+# Start the HTTP server in a separate thread
+http_server_thread = Thread(target=run_http_server, daemon=True)
+http_server_thread.start()
+
+# --------------------------------------
+# Your existing bot code starts below
+# --------------------------------------
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -29,51 +50,29 @@ SUPPORTED_COUNTRIES = {
     "Canada": "Toronto"
 }
 
+# Prayers to exclude from notifications and /zakerny
 EXCLUDED_PRAYERS = ["Midnight", "Firstthird", "Lastthird"]
+
 DATABASE_URL = "zakerny.db"
-CLEANUP_AFTER_ISHA = True
-MAX_PINGS_TO_KEEP = 5
 
-# --------------------------------------
-# Health Check Server (Updated Port)
-# --------------------------------------
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write("🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى".encode("utf-8"))
+# Add these new variables
+CLEANUP_AFTER_ISHA = True  # Set to False to disable auto-cleanup
+MAX_PINGS_TO_KEEP = 5      # Keep last X pings + the activate button
 
-def run_http_server():
-    server = HTTPServer(("0.0.0.0", 8080), HealthCheckHandler)  # Changed to port 8080
-    print("Starting health check server on port 8080...")
-    server.serve_forever()
-
-# Start the HTTP server in a separate thread
-http_server_thread = Thread(target=run_http_server, daemon=True)
-http_server_thread.start()
-
-# --------------------------------------
-# Database Setup
-# --------------------------------------
 def init_db():
     with sqlite3.connect(DATABASE_URL) as conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS servers 
-                      (guild_id INTEGER PRIMARY KEY, 
-                       channel_id INTEGER, 
-                       message_id INTEGER)''')
-        conn.execute('''CREATE TABLE IF NOT EXISTS users 
-                      (user_id INTEGER, 
-                       guild_id INTEGER, 
-                       country TEXT, 
-                       activated BOOLEAN,
-                       PRIMARY KEY (user_id, guild_id))''')
+        c = conn.cursor()
+        # Create servers table with message_id column
+        c.execute('''CREATE TABLE IF NOT EXISTS servers 
+                     (guild_id INTEGER PRIMARY KEY, channel_id INTEGER, message_id INTEGER)''')
+        # Create users table
+        c.execute('''CREATE TABLE IF NOT EXISTS users 
+                     (user_id INTEGER, guild_id INTEGER, country TEXT, activated BOOLEAN,
+                      PRIMARY KEY (user_id, guild_id))''')
+        conn.commit()
 
 init_db()
 
-# --------------------------------------
-# Core Functionality
-# --------------------------------------
 def get_prayer_times(city, country):
     url = f"http://api.aladhan.com/v1/timingsByCity?city={city}&country={country}&method=5"
     response = requests.get(url)
@@ -127,7 +126,7 @@ class CountrySelect(discord.ui.Select):
             c.execute(
                 "INSERT INTO users (user_id, guild_id, country, activated) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT (user_id, guild_id) DO UPDATE SET country = ?, activated = ?",
-                (user_id, guild_id, country, False, country, False)
+                (user_id, guild_id, country, False, country, False)  # Reset activation on country change
             )
             conn.commit()
 
@@ -138,68 +137,75 @@ class CountryView(discord.ui.View):
 
 class ActivateButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="Activate", style=discord.ButtonStyle.green, custom_id="persistent_activate")
+        super().__init__(label="Activate", style=discord.ButtonStyle.green)
 
     async def callback(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-        guild_id = interaction.guild.id
+        try:
+            user_id = interaction.user.id
+            guild_id = interaction.guild.id
 
-        with sqlite3.connect(DATABASE_URL) as conn:
-            c = conn.cursor()
-            c.execute("SELECT country, activated FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
-            result = c.fetchone()
+            # Check if the user has selected a country
+            with sqlite3.connect(DATABASE_URL) as conn:
+                c = conn.cursor()
+                c.execute("SELECT country, activated FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+                result = c.fetchone()
 
-        if result is None:
+            if result is None:
+                await interaction.response.send_message(
+                    "You must select a country using `/countries` first.",
+                    ephemeral=True)
+                return
+
+            country = result[0]
+            activated = not result[1] if result[1] is not None else True
+
+            # Create or get the country-specific Prayer_Pings role
+            pings_role_name = f"{country}_Prayer_Pings"
+            pings_role = discord.utils.get(interaction.guild.roles, name=pings_role_name)
+            if not pings_role:
+                try:
+                    pings_role = await interaction.guild.create_role(name=pings_role_name, mentionable=True)
+                except discord.Forbidden:
+                    await interaction.response.send_message(
+                        "I don't have permission to create roles. Please check my permissions.",
+                        ephemeral=True)
+                    return
+                except discord.HTTPException:
+                    await interaction.response.send_message(
+                        "Failed to create the role. Please try again later.",
+                        ephemeral=True)
+                    return
+
+            # Toggle the Prayer_Pings role
+            if activated:
+                await interaction.user.add_roles(pings_role)
+            else:
+                await interaction.user.remove_roles(pings_role)
+
+            # Update activation status in the database
+            with sqlite3.connect(DATABASE_URL) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "UPDATE users SET activated = ? WHERE user_id = ? AND guild_id = ?",
+                    (activated, user_id, guild_id)
+                )
+                conn.commit()
+
+            status = "activated" if activated else "deactivated"
             await interaction.response.send_message(
-                "You must select a country using `/countries` first.",
+                f"Notifications have been **{status}** for **{country}** in this server.",
                 ephemeral=True)
-            return
-
-        country = result[0]
-        activated = not result[1] if result[1] is not None else True
-
-        pings_role_name = f"{country}_Prayer_Pings"
-        pings_role = discord.utils.get(interaction.guild.roles, name=pings_role_name)
-        if not pings_role:
-            try:
-                pings_role = await interaction.guild.create_role(name=pings_role_name, mentionable=True)
-            except discord.Forbidden:
-                await interaction.response.send_message(
-                    "I don't have permission to create roles. Please check my permissions.",
-                    ephemeral=True)
-                return
-            except discord.HTTPException:
-                await interaction.response.send_message(
-                    "Failed to create the role. Please try again later.",
-                    ephemeral=True)
-                return
-
-        if activated:
-            await interaction.user.add_roles(pings_role)
-        else:
-            await interaction.user.remove_roles(pings_role)
-
-        with sqlite3.connect(DATABASE_URL) as conn:
-            c = conn.cursor()
-            c.execute(
-                "UPDATE users SET activated = ? WHERE user_id = ? AND guild_id = ?",
-                (activated, user_id, guild_id)
-            )
-            conn.commit()
-
-        status = "activated" if activated else "deactivated"
-        await interaction.response.send_message(
-            f"Notifications have been **{status}** for **{country}** in this server.",
-            ephemeral=True)
+        except Exception as e:
+            print(f"Error in ActivateButton callback: {e}")
+            await interaction.response.send_message(
+                "An error occurred. Please try again later.",
+                ephemeral=True)
 
 class ActivateView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__()
         self.add_item(ActivateButton())
 
-# --------------------------------------
-# Commands
-# --------------------------------------
 @bot.tree.command(name="countries", description="Select your country to get prayer time notifications.")
 async def countries(interaction: discord.Interaction):
     view = CountryView()
@@ -371,22 +377,25 @@ async def info(interaction: discord.Interaction):
                     inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# --------------------------------------
-# Self-Cleaning System
-# --------------------------------------
+# New channel cleanup function
 async def self_clean_channel(channel, keep_message_id):
     try:
-        to_delete = []
-        async for msg in channel.history(limit=200):
-            if msg.id == keep_message_id:
+        # Get all messages except those to keep
+        messages_to_delete = []
+        async for message in channel.history(limit=200):
+            if message.id == keep_message_id:
                 continue
-            if len(to_delete) < MAX_PINGS_TO_KEEP and "It's time for" in msg.content:
-                continue
-            to_delete.append(msg)
-        
-        await channel.delete_messages(to_delete)
+            if len(messages_to_delete) < MAX_PINGS_TO_KEEP and "It's time for" in message.content:
+                continue  # Keep recent pings
+            messages_to_delete.append(message)
+
+        # Bulk delete in batches
+        for i in range(0, len(messages_to_delete), 100):
+            batch = messages_to_delete[i:i+100]
+            await channel.delete_messages(batch)
+            
     except Exception as e:
-        print(f"Cleanup failed: {e}")
+        print(f"Cleanup error in {channel.id}: {e}")
 
 @tasks.loop(minutes=1)
 async def notify_prayer_times():
@@ -404,7 +413,8 @@ async def notify_prayer_times():
             if not channel:
                 continue
 
-            c.execute("SELECT country FROM users WHERE guild_id = ? AND activated = 1 LIMIT 1", (guild_id,))
+            # Fetch prayer times for cleanup scheduling
+            c.execute("SELECT country FROM users WHERE guild_id = ? LIMIT 1", (guild_id,))
             country = c.fetchone()[0]
             city = SUPPORTED_COUNTRIES[country]
             prayer_times = get_prayer_times(city, country)
@@ -413,31 +423,50 @@ async def notify_prayer_times():
                 isha_time = datetime.strptime(prayer_times["Isha"], "%H:%M")
                 now = datetime.now()
 
+                # Schedule cleanup 1 minute after Isha
                 if now.hour == isha_time.hour and now.minute == isha_time.minute:
                     await self_clean_channel(channel, message_id)
 
-# --------------------------------------
-# Bot Events
-# --------------------------------------
+            # Rest of your existing notification code...
+
 @bot.event
 async def on_ready():
-    bot.add_view(ActivateView())
-    
-    with sqlite3.connect(DATABASE_URL) as conn:
-        for guild_id, channel_id, message_id in conn.execute("SELECT * FROM servers"):
-            try:
-                channel = bot.get_channel(channel_id)
-                if channel:
-                    await channel.get_partial_message(message_id).edit(view=ActivateView())
-            except Exception as e:
-                print(f"Failed to restore buttons: {e}")
-                
-    await bot.tree.sync()
-    print("Bot ready with persistent buttons!")
+    print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
+    print("------")
+    notify_prayer_times.start()
 
-# --------------------------------------
-# Run Bot
-# --------------------------------------
-if __name__ == "__main__":
-    Thread(target=run_http_server, daemon=True).start()
-    bot.run(os.getenv('TOKEN'))
+    # Reattach button and fix message position
+    with sqlite3.connect(DATABASE_URL) as conn:
+        c = conn.cursor()
+        c.execute("SELECT guild_id, channel_id, message_id FROM servers")
+        servers = c.fetchall()
+
+        for guild_id, channel_id, message_id in servers:
+            guild = bot.get_guild(guild_id)
+            channel = guild.get_channel(channel_id)
+            
+            try:
+                # Delete old button message if exists
+                if message_id:
+                    old_msg = await channel.fetch_message(message_id)
+                    await old_msg.delete()
+            except:
+                pass
+
+            # Send new button at bottom
+            view = ActivateView()
+            new_msg = await channel.send("🕌 Activate notifications:", view=view)
+            
+            # Update database with new message ID
+            c.execute("UPDATE servers SET message_id = ? WHERE guild_id = ?", 
+                     (new_msg.id, guild_id))
+            conn.commit()
+
+    await bot.tree.sync()
+
+TOKEN = os.getenv('TOKEN')
+if not TOKEN:
+    print("Error: Discord token not found in environment variables!")
+    exit(1)
+
+bot.run(TOKEN)
