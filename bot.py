@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import sqlite3
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -19,13 +19,35 @@ bot = commands.Bot(command_prefix="!", intents=intents, case_insensitive=True)
 SUPPORTED_COUNTRIES = {
     "Egypt": "Cairo",
     "Saudi Arabia": "Riyadh",
-    # ... keep other countries ...
+    "Turkey": "Istanbul",
+    "UAE": "Dubai",
+    "Malaysia": "Kuala Lumpur",
+    "Indonesia": "Jakarta",
+    "Pakistan": "Karachi",
+    "UK": "London",
+    "USA": "New York",
+    "Canada": "Toronto"
 }
 
 EXCLUDED_PRAYERS = ["Midnight", "Firstthird", "Lastthird"]
 DATABASE_URL = "zakerny.db"
 CLEANUP_AFTER_ISHA = True
 MAX_PINGS_TO_KEEP = 5
+
+# --------------------------------------
+# Health Check Server
+# --------------------------------------
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write("🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى".encode("utf-8"))
+
+def run_http_server():
+    server = HTTPServer(("0.0.0.0", 8000), HealthCheckHandler)
+    print("Starting health check server on port 8000...")
+    server.serve_forever()
 
 # --------------------------------------
 # Database Setup
@@ -46,15 +68,12 @@ def init_db():
 init_db()
 
 # --------------------------------------
-# Core Functionality (Fixed)
+# Core Functionality
 # --------------------------------------
 class PersistentActivateView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(ActivateButton())
-
-    async def on_error(self, interaction, error, item):
-        print(f"View Error: {error}")
 
 class ActivateButton(discord.ui.Button):
     def __init__(self):
@@ -63,25 +82,64 @@ class ActivateButton(discord.ui.Button):
                         custom_id="persistent_activate")
 
     async def callback(self, interaction: discord.Interaction):
-        # ... (keep existing activation logic but add):
-        await interaction.response.defer()
-        
-        # Verify role assignment
-        try:
+        user_id = interaction.user.id
+        guild_id = interaction.guild.id
+
+        with sqlite3.connect(DATABASE_URL) as conn:
+            c = conn.cursor()
+            c.execute("SELECT country, activated FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+            result = c.fetchone()
+
+        if result is None:
+            await interaction.response.send_message(
+                "You must select a country using `/countries` first.",
+                ephemeral=True)
+            return
+
+        country = result[0]
+        activated = not result[1] if result[1] is not None else True
+
+        pings_role_name = f"{country}_Prayer_Pings"
+        pings_role = discord.utils.get(interaction.guild.roles, name=pings_role_name)
+        if not pings_role:
+            try:
+                pings_role = await interaction.guild.create_role(name=pings_role_name, mentionable=True)
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "I don't have permission to create roles. Please check my permissions.",
+                    ephemeral=True)
+                return
+            except discord.HTTPException:
+                await interaction.response.send_message(
+                    "Failed to create the role. Please try again later.",
+                    ephemeral=True)
+                return
+
+        if activated:
             await interaction.user.add_roles(pings_role)
-            print(f"Assigned {pings_role.name} to {interaction.user}")
-        except Exception as e:
-            print(f"Role assignment failed: {e}")
+        else:
+            await interaction.user.remove_roles(pings_role)
+
+        with sqlite3.connect(DATABASE_URL) as conn:
+            c = conn.cursor()
+            c.execute(
+                "UPDATE users SET activated = ? WHERE user_id = ? AND guild_id = ?",
+                (activated, user_id, guild_id)
+            )
+            conn.commit()
+
+        status = "activated" if activated else "deactivated"
+        await interaction.response.send_message(
+            f"Notifications have been **{status}** for **{country}** in this server.",
+            ephemeral=True)
 
 # --------------------------------------
-# Critical Fixes in Key Areas
+# Bot Events and Tasks
 # --------------------------------------
 @bot.event
 async def on_ready():
-    # Register persistent view
     bot.add_view(PersistentActivateView())
     
-    # Restore button messages
     with sqlite3.connect(DATABASE_URL) as conn:
         for guild_id, channel_id, message_id in conn.execute("SELECT * FROM servers"):
             try:
@@ -96,20 +154,16 @@ async def on_ready():
 
 @tasks.loop(minutes=1)
 async def notify_prayer_times():
-    # Fixed ping logic
     for guild in bot.guilds:
         with sqlite3.connect(DATABASE_URL) as conn:
-            # Get server settings
             server = conn.execute("SELECT channel_id, message_id FROM servers WHERE guild_id = ?", 
                                 (guild.id,)).fetchone()
             if not server:
                 continue
 
-            # Get active users
             users = conn.execute("SELECT country FROM users WHERE guild_id = ? AND activated = 1",
                                 (guild.id,)).fetchall()
             
-            # Process prayer times
             channel = guild.get_channel(server[0])
             if not channel:
                 continue
@@ -158,14 +212,13 @@ async def clean_channel(channel, keep_message_id):
         print(f"Cleanup failed: {e}")
 
 # --------------------------------------
-# Setup Command (Revised)
+# Commands
 # --------------------------------------
 @bot.tree.command(name="setup-prayer-channel")
 async def setup_prayer_channel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Administrator required", ephemeral=True)
 
-    # Create or update channel
     try:
         channel = await interaction.guild.create_text_channel(
             name="prayer-times",
@@ -183,11 +236,9 @@ async def setup_prayer_channel(interaction: discord.Interaction):
     except discord.Forbidden:
         return await interaction.response.send_message("🔒 Missing permissions!", ephemeral=True)
 
-    # Send persistent button
     view = PersistentActivateView()
     msg = await channel.send("**Activate Notifications**", view=view)
     
-    # Update database
     with sqlite3.connect(DATABASE_URL) as conn:
         conn.execute("INSERT OR REPLACE INTO servers VALUES (?, ?, ?)",
                     (interaction.guild.id, channel.id, msg.id))
@@ -198,6 +249,5 @@ async def setup_prayer_channel(interaction: discord.Interaction):
 # Run Bot
 # --------------------------------------
 if __name__ == "__main__":
-    # Health server and bot run
     Thread(target=run_http_server, daemon=True).start()
     bot.run(os.getenv('TOKEN'))
