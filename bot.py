@@ -59,7 +59,7 @@ def init_db():
     with sqlite3.connect(DATABASE_URL) as conn:
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS servers 
-                     (guild_id INTEGER PRIMARY KEY, channel_id INTEGER)''')
+                     (guild_id INTEGER PRIMARY KEY, channel_id INTEGER, message_id INTEGER)''')
         c.execute('''CREATE TABLE IF NOT EXISTS users 
                      (user_id INTEGER, guild_id INTEGER, country TEXT, activated BOOLEAN,
                       PRIMARY KEY (user_id, guild_id))''')
@@ -260,11 +260,11 @@ async def setup_prayer_channel(interaction: discord.Interaction):
 
     with sqlite3.connect(DATABASE_URL) as conn:
         c = conn.cursor()
-        c.execute("SELECT channel_id FROM servers WHERE guild_id = ?", (guild_id,))
+        c.execute("SELECT channel_id, message_id FROM servers WHERE guild_id = ?", (guild_id,))
         result = c.fetchone()
 
     if result:
-        channel_id = result[0]
+        channel_id, message_id = result
         channel = guild.get_channel(channel_id)
         if channel:
             await interaction.response.send_message(
@@ -301,11 +301,14 @@ async def setup_prayer_channel(interaction: discord.Interaction):
         )
         return
 
+    view = ActivateView()
+    message = await channel.send("Click the button below to activate/deactivate prayer time notifications:\n**Note:** You must select a country using `/countries` to receive notifications.", view=view)
+
     with sqlite3.connect(DATABASE_URL) as conn:
         c = conn.cursor()
         c.execute(
-            "INSERT INTO servers (guild_id, channel_id) VALUES (?, ?)",
-            (guild_id, channel.id)
+            "INSERT INTO servers (guild_id, channel_id, message_id) VALUES (?, ?, ?)",
+            (guild_id, channel.id, message.id)
         )
         conn.commit()
 
@@ -313,9 +316,6 @@ async def setup_prayer_channel(interaction: discord.Interaction):
         f"Notification channel created: {channel.mention}",
         ephemeral=True
     )
-
-    view = ActivateView()
-    await channel.send("Click the button below to activate/deactivate prayer time notifications:\n**Note:** You must select a country using `/countries` to receive notifications.", view=view)
 
 @bot.tree.command(name="removerole", description="Remove your country role to stop receiving pings.")
 async def removerole(interaction: discord.Interaction):
@@ -423,6 +423,33 @@ async def on_ready():
     print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
     print("------")
     notify_prayer_times.start()
+
+    # Re-attach the view to the message in the notification channel
+    with sqlite3.connect(DATABASE_URL) as conn:
+        c = conn.cursor()
+        c.execute("SELECT guild_id, channel_id, message_id FROM servers")
+        servers = c.fetchall()
+
+        for guild_id, channel_id, message_id in servers:
+            guild = bot.get_guild(guild_id)
+            if not guild:
+                continue
+
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                continue
+
+            try:
+                message = await channel.fetch_message(message_id)
+                view = ActivateView()
+                await message.edit(content=message.content, view=view)
+            except discord.NotFound:
+                print(f"Message with ID {message_id} not found in channel {channel_id} in guild {guild_id}")
+            except discord.Forbidden:
+                print(f"Missing permissions to fetch or edit message in channel {channel_id} in guild {guild_id}")
+            except discord.HTTPException as e:
+                print(f"Failed to re-attach view to message in channel {channel_id} in guild {guild_id}: {e}")
+
     await bot.tree.sync()
 
 TOKEN = os.getenv('TOKEN')
