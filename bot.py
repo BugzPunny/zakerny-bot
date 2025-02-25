@@ -8,8 +8,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
 # --------------------------------------
-# Simple HTTP server for health checks
-# --------------------------------------
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -23,12 +21,10 @@ def run_http_server():
     print("Starting health check server on port 8000...")
     server.serve_forever()
 
-# Start the HTTP server in a separate thread
+
 http_server_thread = Thread(target=run_http_server, daemon=True)
 http_server_thread.start()
 
-# --------------------------------------
-# Your existing bot code starts below
 # --------------------------------------
 
 intents = discord.Intents.default()
@@ -56,15 +52,14 @@ EXCLUDED_PRAYERS = ["Midnight", "Firstthird", "Lastthird"]
 DATABASE_URL = "zakerny.db"
 
 def init_db():
-    conn = sqlite3.connect(DATABASE_URL)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS servers 
-                 (guild_id INTEGER PRIMARY KEY, channel_id INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (user_id INTEGER, guild_id INTEGER, country TEXT, activated BOOLEAN,
-                  PRIMARY KEY (user_id, guild_id))''')
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DATABASE_URL) as conn:
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS servers 
+                     (guild_id INTEGER PRIMARY KEY, channel_id INTEGER)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS users 
+                     (user_id INTEGER, guild_id INTEGER, country TEXT, activated BOOLEAN,
+                      PRIMARY KEY (user_id, guild_id))''')
+        conn.commit()
 
 init_db()
 
@@ -116,15 +111,14 @@ class CountrySelect(discord.ui.Select):
         await interaction.response.send_message(f"You've selected **{country}** for prayer times!", ephemeral=True)
 
         # Update the database (reset activation status)
-        conn = sqlite3.connect(DATABASE_URL)
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO users (user_id, guild_id, country, activated) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT (user_id, guild_id) DO UPDATE SET country = ?, activated = ?",
-            (user_id, guild_id, country, False, country, False)  # Reset activation on country change
-        )
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(DATABASE_URL) as conn:
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO users (user_id, guild_id, country, activated) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (user_id, guild_id) DO UPDATE SET country = ?, activated = ?",
+                (user_id, guild_id, country, False, country, False)  # Reset activation on country change
+            )
+            conn.commit()
 
 class CountryView(discord.ui.View):
     def __init__(self):
@@ -136,58 +130,66 @@ class ActivateButton(discord.ui.Button):
         super().__init__(label="Activate", style=discord.ButtonStyle.green)
 
     async def callback(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-        guild_id = interaction.guild.id
+        try:
+            user_id = interaction.user.id
+            guild_id = interaction.guild.id
 
-        # Check if the user has selected a country
-        conn = sqlite3.connect(DATABASE_URL)
-        c = conn.cursor()
-        c.execute("SELECT country, activated FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
-        result = c.fetchone()
-        conn.close()
+            # Check if the user has selected a country
+            with sqlite3.connect(DATABASE_URL) as conn:
+                c = conn.cursor()
+                c.execute("SELECT country, activated FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+                result = c.fetchone()
 
-        if result is None:
+            if result is None:
+                await interaction.response.send_message(
+                    "You must select a country using `/countries` first.",
+                    ephemeral=True)
+                return
+
+            country = result[0]
+            activated = not result[1] if result[1] is not None else True
+
+            # Create or get the country-specific Prayer_Pings role
+            pings_role_name = f"{country}_Prayer_Pings"
+            pings_role = discord.utils.get(interaction.guild.roles, name=pings_role_name)
+            if not pings_role:
+                try:
+                    pings_role = await interaction.guild.create_role(name=pings_role_name, mentionable=True)
+                except discord.Forbidden:
+                    await interaction.response.send_message(
+                        "I don't have permission to create roles. Please check my permissions.",
+                        ephemeral=True)
+                    return
+                except discord.HTTPException:
+                    await interaction.response.send_message(
+                        "Failed to create the role. Please try again later.",
+                        ephemeral=True)
+                    return
+
+            # Toggle the Prayer_Pings role
+            if activated:
+                await interaction.user.add_roles(pings_role)
+            else:
+                await interaction.user.remove_roles(pings_role)
+
+            # Update activation status in the database
+            with sqlite3.connect(DATABASE_URL) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "UPDATE users SET activated = ? WHERE user_id = ? AND guild_id = ?",
+                    (activated, user_id, guild_id)
+                )
+                conn.commit()
+
+            status = "activated" if activated else "deactivated"
             await interaction.response.send_message(
-                "You must select a country using `/countries` first.",
+                f"Notifications have been **{status}** for **{country}** in this server.",
                 ephemeral=True)
-            return
-
-        country = result[0]
-        activated = not result[1] if result[1] is not None else True
-
-        # Create or get the country-specific Prayer_Pings role
-        pings_role_name = f"{country}_Prayer_Pings"
-        pings_role = discord.utils.get(interaction.guild.roles, name=pings_role_name)
-        if not pings_role:
-            try:
-                pings_role = await interaction.guild.create_role(name=pings_role_name, mentionable=True)
-            except discord.Forbidden:
-                await interaction.response.send_message("I don't have permission to create roles.", ephemeral=True)
-                return
-            except discord.HTTPException:
-                await interaction.response.send_message("Failed to create the role.", ephemeral=True)
-                return
-
-        # Toggle the Prayer_Pings role
-        if activated:
-            await interaction.user.add_roles(pings_role)
-        else:
-            await interaction.user.remove_roles(pings_role)
-
-        # Update activation status in the database
-        conn = sqlite3.connect(DATABASE_URL)
-        c = conn.cursor()
-        c.execute(
-            "UPDATE users SET activated = ? WHERE user_id = ? AND guild_id = ?",
-            (activated, user_id, guild_id)
-        )
-        conn.commit()
-        conn.close()
-
-        status = "activated" if activated else "deactivated"
-        await interaction.response.send_message(
-            f"Notifications have been **{status}** for **{country}** in this server.",
-            ephemeral=True)
+        except Exception as e:
+            print(f"Error in ActivateButton callback: {e}")
+            await interaction.response.send_message(
+                "An error occurred. Please try again later.",
+                ephemeral=True)
 
 class ActivateView(discord.ui.View):
     def __init__(self):
@@ -204,11 +206,10 @@ async def zakerny(interaction: discord.Interaction):
     user_id = interaction.user.id
     guild_id = interaction.guild.id
 
-    conn = sqlite3.connect(DATABASE_URL)
-    c = conn.cursor()
-    c.execute("SELECT country FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
-    result = c.fetchone()
-    conn.close()
+    with sqlite3.connect(DATABASE_URL) as conn:
+        c = conn.cursor()
+        c.execute("SELECT country FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+        result = c.fetchone()
 
     if result is None:
         await interaction.response.send_message(
@@ -253,11 +254,10 @@ async def setup_prayer_channel(interaction: discord.Interaction):
     guild = interaction.guild
     guild_id = guild.id
 
-    conn = sqlite3.connect(DATABASE_URL)
-    c = conn.cursor()
-    c.execute("SELECT channel_id FROM servers WHERE guild_id = ?", (guild_id,))
-    result = c.fetchone()
-    conn.close()
+    with sqlite3.connect(DATABASE_URL) as conn:
+        c = conn.cursor()
+        c.execute("SELECT channel_id FROM servers WHERE guild_id = ?", (guild_id,))
+        result = c.fetchone()
 
     if result:
         channel_id = result[0]
@@ -269,11 +269,10 @@ async def setup_prayer_channel(interaction: discord.Interaction):
             )
             return
         else:
-            conn = sqlite3.connect(DATABASE_URL)
-            c = conn.cursor()
-            c.execute("DELETE FROM servers WHERE guild_id = ?", (guild_id,))
-            conn.commit()
-            conn.close()
+            with sqlite3.connect(DATABASE_URL) as conn:
+                c = conn.cursor()
+                c.execute("DELETE FROM servers WHERE guild_id = ?", (guild_id,))
+                conn.commit()
 
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
@@ -298,14 +297,13 @@ async def setup_prayer_channel(interaction: discord.Interaction):
         )
         return
 
-    conn = sqlite3.connect(DATABASE_URL)
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO servers (guild_id, channel_id) VALUES (?, ?)",
-        (guild_id, channel.id)
-    )
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DATABASE_URL) as conn:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO servers (guild_id, channel_id) VALUES (?, ?)",
+            (guild_id, channel.id)
+        )
+        conn.commit()
 
     await interaction.response.send_message(
         f"Notification channel created: {channel.mention}",
@@ -320,11 +318,10 @@ async def removerole(interaction: discord.Interaction):
     user_id = interaction.user.id
     guild_id = interaction.guild.id
 
-    conn = sqlite3.connect(DATABASE_URL)
-    c = conn.cursor()
-    c.execute("SELECT country FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
-    result = c.fetchone()
-    conn.close()
+    with sqlite3.connect(DATABASE_URL) as conn:
+        c = conn.cursor()
+        c.execute("SELECT country FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+        result = c.fetchone()
 
     if result is None:
         await interaction.response.send_message(
@@ -372,51 +369,50 @@ async def info(interaction: discord.Interaction):
 
 @tasks.loop(minutes=1)
 async def notify_prayer_times():
-    conn = sqlite3.connect(DATABASE_URL)
-    c = conn.cursor()
-    c.execute("SELECT guild_id, channel_id FROM servers")
-    servers = c.fetchall()
+    with sqlite3.connect(DATABASE_URL) as conn:
+        c = conn.cursor()
+        c.execute("SELECT guild_id, channel_id FROM servers")
+        servers = c.fetchall()
 
-    for guild_id, channel_id in servers:
-        guild = bot.get_guild(guild_id)
-        if not guild:
-            continue
+        for guild_id, channel_id in servers:
+            guild = bot.get_guild(guild_id)
+            if not guild:
+                continue
 
-        channel = guild.get_channel(channel_id)
-        if not channel:
-            continue
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                continue
 
-        c.execute("SELECT country FROM users WHERE guild_id = ? AND activated = 1 GROUP BY country", (guild_id,))
-        countries = c.fetchall()
+            c.execute("SELECT country FROM users WHERE guild_id = ? AND activated = 1 GROUP BY country", (guild_id,))
+            countries = c.fetchall()
 
-        for country_entry in countries:
-            country = country_entry[0]
-            role_name = f"{country}_Prayer_Pings"
-            role = discord.utils.get(guild.roles, name=role_name)
+            for country_entry in countries:
+                country = country_entry[0]
+                role_name = f"{country}_Prayer_Pings"
+                role = discord.utils.get(guild.roles, name=role_name)
 
-            if not role:
-                try:
-                    role = await guild.create_role(name=role_name, mentionable=True)
-                except discord.Forbidden:
-                    print(f"Missing permissions to create role in {guild.name}")
-                    continue
+                if not role:
+                    try:
+                        role = await guild.create_role(name=role_name, mentionable=True)
+                    except discord.Forbidden:
+                        print(f"Missing permissions to create role in {guild.name}")
+                        continue
 
-            city = SUPPORTED_COUNTRIES.get(country)
-            prayer_times = get_prayer_times(city, country)
-            
-            if prayer_times:
-                current_time = datetime.now().strftime("%H:%M")
-                # Filter out excluded prayers
-                filtered_prayers = {prayer: time for prayer, time in prayer_times.items() 
-                                   if prayer not in EXCLUDED_PRAYERS}
+                city = SUPPORTED_COUNTRIES.get(country)
+                prayer_times = get_prayer_times(city, country)
                 
-                for prayer, time in filtered_prayers.items():
-                    if current_time == time:
-                        await channel.send(
-                            f"{role.mention} It's time for **{prayer}**! ⏰",
-                            allowed_mentions=discord.AllowedMentions(roles=True)
-                        )
-    conn.close()
+                if prayer_times:
+                    current_time = datetime.now().strftime("%H:%M")
+                    # Filter out excluded prayers
+                    filtered_prayers = {prayer: time for prayer, time in prayer_times.items() 
+                                       if prayer not in EXCLUDED_PRAYERS}
+                    
+                    for prayer, time in filtered_prayers.items():
+                        if current_time == time:
+                            await channel.send(
+                                f"{role.mention} It's time for **{prayer}**! ⏰",
+                                allowed_mentions=discord.AllowedMentions(roles=True)
+                            )
 
 @bot.event
 async def on_ready():
