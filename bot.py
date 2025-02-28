@@ -4,13 +4,17 @@ import requests
 from datetime import datetime
 import sqlite3
 import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 
+# Discord bot setup
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, case_insensitive=True)
 
+# Supported countries and their cities
 SUPPORTED_COUNTRIES = {
     "Egypt": "Cairo",
     "Saudi Arabia": "Riyadh",
@@ -24,6 +28,7 @@ SUPPORTED_COUNTRIES = {
     "Canada": "Toronto"
 }
 
+# Database setup
 DATABASE_URL = "zakerny.db"
 
 def init_db():
@@ -39,6 +44,7 @@ def init_db():
 
 init_db()
 
+# Prayer times API
 def get_prayer_times(city, country):
     url = f"http://api.aladhan.com/v1/timingsByCity?city={city}&country={country}&method=5"
     response = requests.get(url)
@@ -47,6 +53,7 @@ def get_prayer_times(city, country):
         return data["data"]["timings"]
     return None
 
+# Time conversion
 def convert_to_12_hour(time_24h):
     try:
         time_obj = datetime.strptime(time_24h, "%H:%M")
@@ -54,6 +61,7 @@ def convert_to_12_hour(time_24h):
     except ValueError:
         return time_24h
 
+# Discord UI components
 class CountrySelect(discord.ui.Select):
     def __init__(self):
         options = [discord.SelectOption(label=country, value=country) for country in SUPPORTED_COUNTRIES]
@@ -140,6 +148,7 @@ class ActivateView(discord.ui.View):
         super().__init__()
         self.add_item(ActivateButton())
 
+# Discord commands
 @bot.tree.command(name="countries", description="Select your country to get prayer time notifications.")
 async def countries(interaction: discord.Interaction):
     view = CountryView()
@@ -324,6 +333,26 @@ async def info(interaction: discord.Interaction):
                     inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# Health check server
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def run_health_check_server():
+    server_address = ("0.0.0.0", 8080)
+    httpd = HTTPServer(server_address, HealthCheckHandler)
+    print("Health check server running on port 8080...")
+    httpd.serve_forever()
+
+# Start the health check server in a separate thread
+health_check_thread = threading.Thread(target=run_health_check_server)
+health_check_thread.daemon = True
+health_check_thread.start()
+
+# Discord bot tasks
 @tasks.loop(minutes=1)
 async def notify_prayer_times():
     conn = sqlite3.connect(DATABASE_URL)
@@ -368,6 +397,7 @@ async def notify_prayer_times():
                         )
     conn.close()
 
+# Discord bot events
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
@@ -375,4 +405,5 @@ async def on_ready():
     notify_prayer_times.start()
     await bot.tree.sync()
 
+# Run the bot
 bot.run(os.getenv('TOKEN'))
