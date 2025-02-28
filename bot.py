@@ -4,32 +4,6 @@ import requests
 from datetime import datetime
 import sqlite3
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Thread
-
-# --------------------------------------
-# Simple HTTP server for health checks
-# --------------------------------------
-
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write("🕌 Bot is running! فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى".encode("utf-8"))
-
-def run_http_server():
-    server = HTTPServer(("0.0.0.0", 8000), HealthCheckHandler)
-    print("Starting health check server on port 8000...")
-    server.serve_forever()
-
-# Start the HTTP server in a separate thread
-http_server_thread = Thread(target=run_http_server, daemon=True)
-http_server_thread.start()
-
-# --------------------------------------
-# Your existing bot code starts below
-# --------------------------------------
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -50,11 +24,7 @@ SUPPORTED_COUNTRIES = {
     "Canada": "Toronto"
 }
 
-# Prayers to exclude from notifications and /zakerny
-EXCLUDED_PRAYERS = ["Midnight", "Firstthird", "Lastthird"]
-
-# Use an absolute path for the database
-DATABASE_URL = "/app/zakerny.db"
+DATABASE_URL = "zakerny.db"
 
 def init_db():
     conn = sqlite3.connect(DATABASE_URL)
@@ -94,12 +64,11 @@ class CountrySelect(discord.ui.Select):
         user_id = interaction.user.id
         guild_id = interaction.guild.id
 
-        # Create or get the country-specific role (e.g., Egypt_Prayer_Times)
-        times_role_name = f"{country}_Prayer_Times"
-        times_role = discord.utils.get(interaction.guild.roles, name=times_role_name)
-        if not times_role:
+        role_name = f"{country} Subscriber"
+        role = discord.utils.get(interaction.guild.roles, name=role_name)
+        if not role:
             try:
-                times_role = await interaction.guild.create_role(name=times_role_name, mentionable=True)
+                role = await interaction.guild.create_role(name=role_name, mentionable=True)
             except discord.Forbidden:
                 await interaction.response.send_message("I don't have permission to create roles.", ephemeral=True)
                 return
@@ -107,22 +76,19 @@ class CountrySelect(discord.ui.Select):
                 await interaction.response.send_message("Failed to create the role.", ephemeral=True)
                 return
 
-        # Remove any existing country-specific roles
         for existing_role in interaction.user.roles:
-            if "_Prayer_Times" in existing_role.name:
+            if "Subscriber" in existing_role.name:
                 await interaction.user.remove_roles(existing_role)
 
-        # Add the new country-specific role
-        await interaction.user.add_roles(times_role)
-        await interaction.response.send_message(f"You've selected **{country}** for prayer times!", ephemeral=True)
+        await interaction.user.add_roles(role)
+        await interaction.response.send_message(f"You'll now receive **{country}** prayer time notifications!", ephemeral=True)
 
-        # Update the database (reset activation status)
         conn = sqlite3.connect(DATABASE_URL)
         c = conn.cursor()
         c.execute(
             "INSERT INTO users (user_id, guild_id, country, activated) VALUES (?, ?, ?, ?) "
             "ON CONFLICT (user_id, guild_id) DO UPDATE SET country = ?, activated = ?",
-            (user_id, guild_id, country, False, country, False)  # Reset activation on country change
+            (user_id, guild_id, country, True, country, True)
         )
         conn.commit()
         conn.close()
@@ -140,7 +106,6 @@ class ActivateButton(discord.ui.Button):
         user_id = interaction.user.id
         guild_id = interaction.guild.id
 
-        # Check if the user has selected a country
         conn = sqlite3.connect(DATABASE_URL)
         c = conn.cursor()
         c.execute("SELECT country, activated FROM users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
@@ -154,28 +119,8 @@ class ActivateButton(discord.ui.Button):
             return
 
         country = result[0]
-        activated = not result[1] if result[1] is not None else True
+        activated = not result[1] if result[1] is not None else True  # Default to True if no record exists
 
-        # Create or get the country-specific Prayer_Pings role
-        pings_role_name = f"{country}_Prayer_Pings"
-        pings_role = discord.utils.get(interaction.guild.roles, name=pings_role_name)
-        if not pings_role:
-            try:
-                pings_role = await interaction.guild.create_role(name=pings_role_name, mentionable=True)
-            except discord.Forbidden:
-                await interaction.response.send_message("I don't have permission to create roles.", ephemeral=True)
-                return
-            except discord.HTTPException:
-                await interaction.response.send_message("Failed to create the role.", ephemeral=True)
-                return
-
-        # Toggle the Prayer_Pings role
-        if activated:
-            await interaction.user.add_roles(pings_role)
-        else:
-            await interaction.user.remove_roles(pings_role)
-
-        # Update activation status in the database
         conn = sqlite3.connect(DATABASE_URL)
         c = conn.cursor()
         c.execute(
@@ -223,19 +168,17 @@ async def zakerny(interaction: discord.Interaction):
     prayer_times = get_prayer_times(city, country)
 
     if prayer_times:
-        # Filter out excluded prayers
-        filtered_prayers = {prayer: time for prayer, time in prayer_times.items() 
-                          if prayer not in EXCLUDED_PRAYERS}
-        
         embed = discord.Embed(
             title=f"Prayer Times for {city}, {country} 🕌",
             description="Here are the prayer times for today:",
             color=discord.Color.blue())
-        
-        # Add filtered fields
-        for prayer, time in filtered_prayers.items():
-            embed.add_field(name=prayer, value=convert_to_12_hour(time), inline=True)
-        
+        embed.add_field(name="Fajr", value=convert_to_12_hour(prayer_times["Fajr"]), inline=True)
+        embed.add_field(name="Sunrise", value=convert_to_12_hour(prayer_times["Sunrise"]), inline=True)
+        embed.add_field(name="Dhuhr", value=convert_to_12_hour(prayer_times["Dhuhr"]), inline=True)
+        embed.add_field(name="Asr", value=convert_to_12_hour(prayer_times["Asr"]), inline=True)
+        embed.add_field(name="Maghrib", value=convert_to_12_hour(prayer_times["Maghrib"]), inline=True)
+        embed.add_field(name="Isha", value=convert_to_12_hour(prayer_times["Isha"]), inline=True)
+        embed.set_footer(text="فَذَكِّرْ إِنْ نَفَعَتِ الذِّكْرَى")
         await interaction.response.send_message(embed=embed, ephemeral=True)
     else:
         await interaction.response.send_message(
@@ -275,6 +218,7 @@ async def setup_prayer_channel(interaction: discord.Interaction):
             conn.commit()
             conn.close()
 
+    # Create the notification channel with restricted permissions
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
         guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
@@ -298,6 +242,7 @@ async def setup_prayer_channel(interaction: discord.Interaction):
         )
         return
 
+    # Store the channel ID in the database
     conn = sqlite3.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute(
@@ -312,7 +257,7 @@ async def setup_prayer_channel(interaction: discord.Interaction):
         ephemeral=True
     )
 
-    # Send the activation message with the button
+    # Send the activation button to the new channel
     view = ActivateView()
     await channel.send(
         "Click the button below to activate/deactivate prayer time notifications:\n"
@@ -337,7 +282,7 @@ async def removerole(interaction: discord.Interaction):
         return
 
     country = result[0]
-    role_name = f"{country}_Prayer_Times"
+    role_name = f"{country} Subscriber"
     role = discord.utils.get(interaction.guild.roles, name=role_name)
 
     if role:
@@ -370,6 +315,10 @@ async def info(interaction: discord.Interaction):
     embed.add_field(name="/zakerny",
                     value="Display prayer times for your selected country.",
                     inline=False)
+    embed.add_field(
+        name="/activate",
+        value="Activate/deactivate notifications.",
+        inline=False)
     embed.add_field(name="/removerole",
                     value="Remove your country role to stop receiving pings.",
                     inline=False)
@@ -396,7 +345,7 @@ async def notify_prayer_times():
 
         for country_entry in countries:
             country = country_entry[0]
-            role_name = f"{country}_Prayer_Pings"
+            role_name = f"{country} Subscriber"
             role = discord.utils.get(guild.roles, name=role_name)
 
             if not role:
@@ -411,11 +360,7 @@ async def notify_prayer_times():
             
             if prayer_times:
                 current_time = datetime.now().strftime("%H:%M")
-                # Filter out excluded prayers
-                filtered_prayers = {prayer: time for prayer, time in prayer_times.items() 
-                                   if prayer not in EXCLUDED_PRAYERS}
-                
-                for prayer, time in filtered_prayers.items():
+                for prayer, time in prayer_times.items():
                     if current_time == time:
                         await channel.send(
                             f"{role.mention} It's time for **{prayer}**! ⏰",
@@ -423,90 +368,11 @@ async def notify_prayer_times():
                         )
     conn.close()
 
-@tasks.loop(hours=24)
-async def cleanup_prayer_pings():
-    conn = sqlite3.connect(DATABASE_URL)
-    c = conn.cursor()
-    c.execute("SELECT guild_id, channel_id FROM servers")
-    servers = c.fetchall()
-
-    for guild_id, channel_id in servers:
-        guild = bot.get_guild(guild_id)
-        if not guild:
-            continue
-
-        channel = guild.get_channel(channel_id)
-        if not channel:
-            continue
-
-        # Fetch the last Isha time
-        c.execute("SELECT country FROM users WHERE guild_id = ? AND activated = 1 GROUP BY country", (guild_id,))
-        countries = c.fetchall()
-
-        for country_entry in countries:
-            country = country_entry[0]
-            city = SUPPORTED_COUNTRIES.get(country)
-            prayer_times = get_prayer_times(city, country)
-            
-            if prayer_times:
-                isha_time = prayer_times.get("Isha")
-                if isha_time:
-                    # Convert Isha time to datetime object
-                    isha_datetime = datetime.strptime(isha_time, "%H:%M")
-                    now = datetime.now()
-                    # Calculate the time difference
-                    time_difference = now - isha_datetime
-                    # If it's been more than 24 hours since Isha, clean up old pings
-                    if time_difference.total_seconds() > 86400:  # 86400 seconds = 24 hours
-                        # Fetch the last Isha ping
-                        async for message in channel.history(limit=100):
-                            if "Isha" in message.content:
-                                # Delete all messages except the last Isha ping
-                                await message.delete()
-                                break
-    conn.close()
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
     print("------")
     notify_prayer_times.start()
-    cleanup_prayer_pings.start()
-
-    # Re-attach the activation button to the prayer-times channel if it exists
-    conn = sqlite3.connect(DATABASE_URL)
-    c = conn.cursor()
-    c.execute("SELECT guild_id, channel_id FROM servers")
-    servers = c.fetchall()
-    conn.close()
-
-    for guild_id, channel_id in servers:
-        guild = bot.get_guild(guild_id)
-        if not guild:
-            continue
-
-        channel = guild.get_channel(channel_id)
-        if not channel:
-            continue
-
-        # Check if the activation message already exists
-        async for message in channel.history(limit=10):
-            if message.author == bot.user and "Click the button below" in message.content:
-                break
-        else:
-            # Send the activation message with the button
-            view = ActivateView()
-            await channel.send(
-                "Click the button below to activate/deactivate prayer time notifications:\n"
-                "**Note:** You must select a country using `/countries` to receive notifications.",
-                view=view
-            )
-
     await bot.tree.sync()
 
-TOKEN = os.getenv('TOKEN')
-if not TOKEN:
-    print("Error: Discord token not found in environment variables!")
-    exit(1)
-
-bot.run(TOKEN)
+bot.run(os.getenv('TOKEN'))
