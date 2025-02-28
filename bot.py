@@ -342,9 +342,9 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
 def run_health_check_server():
-    server_address = ("0.0.0.0", 8080)
+    server_address = ("0.0.0.0", 8000)  
     httpd = HTTPServer(server_address, HealthCheckHandler)
-    print("Health check server running on port 8080...")
+    print("Health check server running on port 8000...")
     httpd.serve_forever()
 
 # Start the health check server in a separate thread
